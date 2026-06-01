@@ -1,0 +1,20 @@
+name: Stop Odoo Sandbox
+description: Stop shared Odoo ecommerce sandbox for CI tests
+
+inputs:
+  compose-file:
+    description: Docker compose file to use
+    required: false
+    default: docker-compose.ci.yml
+  working-directory:
+    description: Directory where compose file exists
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Stop sandbox stack
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: docker compose -f ${{ inputs.compose-file }} down -v --remove-orphans
