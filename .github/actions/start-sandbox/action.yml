@@ -1,0 +1,150 @@
+name: Start Odoo Sandbox
+description: Start shared Odoo ecommerce sandbox for CI tests
+
+inputs:
+  compose-file:
+    description: Docker compose file to use
+    required: false
+    default: docker-compose.ci.yml
+  host-port:
+    description: Host port that exposes Odoo web
+    required: false
+    default: "8069"
+  wait-timeout-seconds:
+    description: Max wait time for startup
+    required: false
+    default: "420"
+  working-directory:
+    description: Directory where compose file exists
+    required: false
+    default: "."
+
+outputs:
+  base-url:
+    description: Base URL for consumers such as Playwright
+    value: ${{ steps.out.outputs.base-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Start sandbox stack
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: docker compose -f ${{ inputs.compose-file }} up -d --build
+
+    - name: Wait for database health
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        timeout=${{ inputs.wait-timeout-seconds }}
+        elapsed=0
+        while true; do
+          health="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' odoo_postgres 2>/dev/null || true)"
+          if [ "$health" = "healthy" ]; then
+            echo "Database is healthy"
+            break
+          fi
+
+          if [ "$elapsed" -ge "$timeout" ]; then
+            echo "Timed out waiting for database health"
+            docker compose -f ${{ inputs.compose-file }} ps
+            docker compose -f ${{ inputs.compose-file }} logs --no-color db
+            exit 1
+          fi
+
+          echo "Waiting for database health... current status: ${health:-unknown}"
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+
+    - name: Wait for Odoo container health
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        timeout=${{ inputs.wait-timeout-seconds }}
+        elapsed=0
+        while true; do
+          health="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' odoo 2>/dev/null || true)"
+          if [ "$health" = "healthy" ]; then
+            echo "Odoo container is healthy"
+            break
+          fi
+
+          if [ "$elapsed" -ge "$timeout" ]; then
+            echo "Timed out waiting for Odoo container health"
+            docker compose -f ${{ inputs.compose-file }} ps
+            docker compose -f ${{ inputs.compose-file }} logs --no-color odoo
+            exit 1
+          fi
+
+          echo "Waiting for Odoo container health... current status: ${health:-unknown}"
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+
+    - name: Wait for Odoo HTTP readiness
+      shell: bash
+      run: |
+        timeout=${{ inputs.wait-timeout-seconds }}
+        elapsed=0
+        while true; do
+          if curl -fsS "http://127.0.0.1:${{ inputs.host-port }}/web/login" > /dev/null; then
+            echo "Odoo login page is reachable"
+            break
+          fi
+
+          if [ "$elapsed" -ge "$timeout" ]; then
+            echo "Timed out waiting for Odoo HTTP readiness"
+            exit 1
+          fi
+
+          echo "Waiting for Odoo HTTP readiness at http://127.0.0.1:${{ inputs.host-port }}/web/login ..."
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+
+    - name: Wait for init container to complete
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        timeout=${{ inputs.wait-timeout-seconds }}
+        elapsed=0
+        while true; do
+          running="$(docker inspect --format='{{.State.Running}}' odoo_init 2>/dev/null || true)"
+          status="$(docker inspect --format='{{.State.Status}}' odoo_init 2>/dev/null || true)"
+          exit_code="$(docker inspect --format='{{.State.ExitCode}}' odoo_init 2>/dev/null || true)"
+
+          if [ "$running" = "false" ] && [ "$status" = "exited" ] && [ "$exit_code" = "0" ]; then
+            echo "odoo-init completed successfully"
+            break
+          fi
+
+          if [ "$running" = "false" ] && [ "$status" = "exited" ] && [ -n "$exit_code" ] && [ "$exit_code" != "0" ]; then
+            echo "odoo-init failed with exit code $exit_code"
+            docker compose -f ${{ inputs.compose-file }} logs --no-color odoo-init
+            exit 1
+          fi
+
+          if [ "$elapsed" -ge "$timeout" ]; then
+            echo "Timed out waiting for odoo-init to complete"
+            docker compose -f ${{ inputs.compose-file }} ps
+            docker compose -f ${{ inputs.compose-file }} logs --no-color odoo-init
+            exit 1
+          fi
+
+          echo "Waiting for odoo-init to complete... current status: ${status:-unknown}"
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+
+    - name: Verify functional endpoints
+      shell: bash
+      run: |
+        curl -fsS "http://127.0.0.1:${{ inputs.host-port }}/web/login" > /dev/null
+        curl -fsS "http://127.0.0.1:${{ inputs.host-port }}/web/signup" > /dev/null
+        curl -fsS "http://127.0.0.1:${{ inputs.host-port }}/shop" > /dev/null
+
+    - name: Set outputs
+      id: out
+      shell: bash
+      run: echo "base-url=http://127.0.0.1:${{ inputs.host-port }}" >> "$GITHUB_OUTPUT"
