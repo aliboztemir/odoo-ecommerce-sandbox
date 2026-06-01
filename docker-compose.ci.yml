@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:15
+    container_name: odoo_postgres
+    environment:
+      POSTGRES_DB: odoo
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - odoo_db_data:/var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  odoo:
+    image: odoo:19.0
+    container_name: odoo
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8069:8069"
+      - "8072:8072"
+    command: >
+      odoo -d odoo
+      -i base,product,sale,website_sale,sale_management,stock,account,payment,payment_demo,portal,auth_signup
+      --without-demo=False
+    volumes:
+      - odoo_web_data:/var/lib/odoo
+      - ./config:/etc/odoo
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8069/web/login >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+
+  odoo-init:
+    image: odoo:19.0
+    container_name: odoo_init
+    depends_on:
+      odoo:
+        condition: service_healthy
+    environment:
+      HOST: db
+      PORT: 5432
+      USER: odoo
+      PASSWORD: odoo_password
+      ODOO_DB: odoo
+      ODOO_URL: http://odoo:8069
+      ODOO_ADMIN_USER: admin
+      ODOO_ADMIN_PASSWORD: admin
+      TEST_CUSTOMER_EMAIL: customer@example.com
+      TEST_CUSTOMER_PASSWORD: customer123
+    volumes:
+      - odoo_web_data:/var/lib/odoo
+      - ./init:/init
+    entrypoint: ["/bin/bash", "/init/setup-ecommerce.sh"]
+    restart: "no"
+
+volumes:
+  odoo_db_data:
+  odoo_web_data:
